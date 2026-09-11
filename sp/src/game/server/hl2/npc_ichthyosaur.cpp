@@ -26,27 +26,37 @@
 #include "engine/IEngineSound.h"
 #include "movevars_shared.h"
 
+#include "physics_prop_ragdoll.h"
+#include "vphysics/constraints.h"
+#include "physics_saverestore.h"
+
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
 
 ConVar	sk_ichthyosaur_health( "sk_ichthyosaur_health", "0" );
 ConVar	sk_ichthyosaur_melee_dmg( "sk_ichthyosaur_melee_dmg", "0" );
+ConVar	sk_ichthyosaur_dmg_mult( "sk_ichthyosaur_dmg_mult", "2" ); // damage multiplier int. default 3x
+
+ConVar	npc_ichthyosaur_ensnare( "npc_ichthyosaur_ensnare", "1" );
+
+ConVar	npc_ichthyosaur_movespeed_walk( "npc_ichthyosaur_movespeed_walk", "190.0f" );
+ConVar	npc_ichthyosaur_movespeed_run( "npc_ichthyosaur_movespeed_run", "300.0f" );
 
 #define	ICHTHYOSAUR_MODEL	"models/ichthyosaur.mdl"
 
-#define	ICH_HEIGHT_PREFERENCE	16.0f
-#define	ICH_DEPTH_PREFERENCE	8.0f
+#define	ICH_HEIGHT_PREFERENCE	32.0f //16.0f
+#define	ICH_DEPTH_PREFERENCE	16.0f //8.0f
 
 #define	ICH_WAYPOINT_DISTANCE	64.0f
 
 #define	ICH_AE_BITE				11
 #define	ICH_AE_BITE_START		12
 
-#define	ICH_SWIM_SPEED_WALK		150
-#define	ICH_SWIM_SPEED_RUN		500
+#define	ICH_SWIM_SPEED_WALK		npc_ichthyosaur_movespeed_walk.GetFloat() //150
+#define	ICH_SWIM_SPEED_RUN		npc_ichthyosaur_movespeed_run.GetFloat() //500
 
-#define	ICH_MIN_TURN_SPEED		4.0f
-#define	ICH_MAX_TURN_SPEED		30.0f
+#define	ICH_MIN_TURN_SPEED		16.0f //4.0f
+#define	ICH_MAX_TURN_SPEED		50.0f //30.0f
 
 #define	ENVELOPE_CONTROLLER		(CSoundEnvelopeController::GetController())
 
@@ -65,11 +75,12 @@ enum IchthyosaurMoveType_t
 
 class CNPC_Ichthyosaur : public CAI_BaseNPC
 {
-public:
 	DECLARE_CLASS( CNPC_Ichthyosaur, CAI_BaseNPC );
+public:
 	DECLARE_DATADESC();
 
-	CNPC_Ichthyosaur( void ) {}
+	CNPC_Ichthyosaur();
+	~CNPC_Ichthyosaur();
 
 	int		SelectSchedule( void );
 	int		MeleeAttack1Conditions( float flDot, float flDist );
@@ -78,10 +89,13 @@ public:
 
 	void	Precache( void );
 	void	Spawn( void );
-	void	MoveFlyExecute( CBaseEntity *pTargetEnt, const Vector & vecDir, float flDistance, float flInterval );
+	//void	MoveFlyExecute( CBaseEntity *pTargetEnt, const Vector & vecDir, float flDistance, float flInterval );
 	void	HandleAnimEvent( animevent_t *pEvent );
 	void	PrescheduleThink( void );
 	bool	OverrideMove( float flInterval );
+
+	virtual float		GetSequenceGroundSpeed(CStudioHdr *pStudioHdr, int iSequence);
+
 	void	StartTask( const Task_t *pTask );
 	void	RunTask( const Task_t *pTask );
 	void	TranslateNavGoal( CBaseEntity *pEnemy, Vector &chasePosition );
@@ -92,6 +106,9 @@ public:
 	Class_T Classify( void )	{	return CLASS_ANTLION;	}	//FIXME: No classification for various wildlife?
 
 	bool	FVisible( CBaseEntity *pEntity, int traceMask = MASK_BLOCKLOS, CBaseEntity **ppBlocker = NULL );
+
+	virtual bool	BecomeRagdollOnClient(const Vector &force);
+	virtual Activity	NPC_TranslateActivity( Activity baseAct );
 
 private:
 
@@ -139,8 +156,10 @@ private:
 	bool	m_bHasMoveTarget;
 	bool	m_bIgnoreSurface;
 
+	bool	m_bEnsnare;
+
 	//CSoundPatch	*m_pSwimSound;
-	//CSoundPatch	*m_pVoiceSound;
+	CSoundPatch	*m_pVoiceSound;
 	
 	DEFINE_CUSTOM_AI;
 };
@@ -166,6 +185,7 @@ BEGIN_DATADESC( CNPC_Ichthyosaur )
 	DEFINE_FIELD( m_flNextGrowlTime,		FIELD_FLOAT ),
 	DEFINE_FIELD( m_bHasMoveTarget,		FIELD_BOOLEAN ),
 	DEFINE_FIELD( m_bIgnoreSurface,		FIELD_BOOLEAN ),
+	DEFINE_FIELD( m_bEnsnare,			FIELD_BOOLEAN ),
 
 	//DEFINE_FUNCTION( IchTouch ),
 
@@ -176,7 +196,6 @@ enum IchSchedules
 {
 	SCHED_ICH_CHASE_ENEMY = LAST_SHARED_SCHEDULE,
 	SCHED_ICH_PATROL_RUN,
-	SCHED_ICH_PATROL_WALK,
 	SCHED_ICH_DROWN_VICTIM,
 	SCHED_ICH_MELEE_ATTACK1,
 	SCHED_ICH_THRASH,
@@ -196,6 +215,40 @@ int	ACT_ICH_BITE_HIT;
 int	ACT_ICH_BITE_MISS;
 
 //-----------------------------------------------------------------------------
+// Purpose: Constructor
+// Input  :
+// Output :
+//-----------------------------------------------------------------------------	
+CNPC_Ichthyosaur::CNPC_Ichthyosaur(void)
+{
+	// Initialize variables
+	m_bHasMoveTarget = false;
+	m_bIgnoreSurface = false;
+	m_flHoldTime = 0.0f;
+	m_flNextBiteTime = 0.0f;
+	m_flNextGrowlTime = 0.0f;
+	m_flNextPingTime = 0.0f;
+	m_flSwimSpeed = 0.0f;
+	m_flTailPitch = 0.0f;
+	m_flTailYaw = 0.0f;
+	m_bEnsnare = false;
+	m_pVictim = NULL;
+	m_pVoiceSound = NULL;
+	//m_pSwimSound = NULL;
+}
+
+//-----------------------------------------------------------------------------
+// Purpose: 
+//-----------------------------------------------------------------------------
+CNPC_Ichthyosaur::~CNPC_Ichthyosaur(void)
+{
+	//ENVELOPE_CONTROLLER.SoundDestroy( m_pSwimSound );
+	ENVELOPE_CONTROLLER.SoundDestroy( m_pVoiceSound );
+
+	ReleaseVictim();
+}
+
+//-----------------------------------------------------------------------------
 // Purpose: 
 //-----------------------------------------------------------------------------
 void CNPC_Ichthyosaur::InitCustomSchedules( void ) 
@@ -207,7 +260,6 @@ void CNPC_Ichthyosaur::InitCustomSchedules( void )
 	//Schedules
 	ADD_CUSTOM_SCHEDULE( CNPC_Ichthyosaur,	SCHED_ICH_CHASE_ENEMY );
 	ADD_CUSTOM_SCHEDULE( CNPC_Ichthyosaur,	SCHED_ICH_PATROL_RUN );
-	ADD_CUSTOM_SCHEDULE( CNPC_Ichthyosaur,	SCHED_ICH_PATROL_WALK );
 	ADD_CUSTOM_SCHEDULE( CNPC_Ichthyosaur,	SCHED_ICH_DROWN_VICTIM );
 	ADD_CUSTOM_SCHEDULE( CNPC_Ichthyosaur,	SCHED_ICH_MELEE_ATTACK1 );
 	ADD_CUSTOM_SCHEDULE( CNPC_Ichthyosaur,	SCHED_ICH_THRASH );
@@ -226,7 +278,6 @@ void CNPC_Ichthyosaur::InitCustomSchedules( void )
 
 	AI_LOAD_SCHEDULE( CNPC_Ichthyosaur,	SCHED_ICH_CHASE_ENEMY );
 	AI_LOAD_SCHEDULE( CNPC_Ichthyosaur,	SCHED_ICH_PATROL_RUN );
-	AI_LOAD_SCHEDULE( CNPC_Ichthyosaur,	SCHED_ICH_PATROL_WALK );
 	AI_LOAD_SCHEDULE( CNPC_Ichthyosaur,	SCHED_ICH_DROWN_VICTIM );
 	AI_LOAD_SCHEDULE( CNPC_Ichthyosaur,	SCHED_ICH_MELEE_ATTACK1 );
 	AI_LOAD_SCHEDULE( CNPC_Ichthyosaur,	SCHED_ICH_THRASH );
@@ -245,6 +296,12 @@ void CNPC_Ichthyosaur::Precache( void )
 	PrecacheScriptSound( "NPC_Ichthyosaur.Bite" );
 	PrecacheScriptSound( "NPC_Ichthyosaur.BiteMiss" );
 	PrecacheScriptSound( "NPC_Ichthyosaur.AttackGrowl" );
+	//PrecacheScriptSound( "NPC_Ichthyosaur.Growl" ); //FIXME: only 1/5 sounds for this are in retail
+	//PrecacheScriptSound( "NPC_Ichthyosaur.Ping" );
+
+	// Direct precache. Ideally add to sound scripts
+	//PrecacheSound( "npc/ichthyosaur/ich_amb1.wav" );
+	PrecacheSound( "npc/ichthyosaur/water_breath.wav" );
 
 	BaseClass::Precache();
 }
@@ -264,20 +321,26 @@ void CNPC_Ichthyosaur::Spawn( void )
 	
 	SetNavType( NAV_FLY );
 	m_NPCState				= NPC_STATE_NONE;
-	SetBloodColor( BLOOD_COLOR_RED );
+	SetBloodColor( BLOOD_COLOR_YELLOW );
 	m_iHealth				= sk_ichthyosaur_health.GetFloat();
 	m_iMaxHealth			= m_iHealth;
-	m_flFieldOfView			= -0.707;	// 270 degrees
+	m_flFieldOfView			= -0.707f;	// 270 degrees
 	SetDistLook( 1024 );
 
 	SetSolid( SOLID_BBOX );
 	AddSolidFlags( FSOLID_NOT_STANDABLE );
-	SetMoveType( MOVETYPE_STEP );
-	AddFlag( FL_FLY | FL_STEPMOVEMENT );
 
-	m_flGroundSpeed			= ICH_SWIM_SPEED_RUN;
+	SetMoveType( MOVETYPE_STEP ); // MOVETYPE_FLY causes movement stutter. MOVETYPE_STEP works completely fine.
+	AddFlag( FL_FLY );
+
+	m_flGroundSpeed			= ICH_SWIM_SPEED_WALK;
 
 	m_bIgnoreSurface		= false;
+
+	// Init the pose parameters
+	SetPoseParameter( "speed", 0 );
+	SetPoseParameter( "sidetoside", 0 );
+	SetPoseParameter( "upanddown", 0 );
 
 	m_flSwimSpeed			= 0.0f;
 	m_flTailYaw				= 0.0f;
@@ -287,6 +350,8 @@ void CNPC_Ichthyosaur::Spawn( void )
 	m_flHoldTime			= gpGlobals->curtime;
 	m_flNextPingTime		= gpGlobals->curtime;
 	m_flNextGrowlTime		= gpGlobals->curtime;
+
+	m_bEnsnare				= false;
 
 #if FEELER_COLLISION
 
@@ -301,15 +366,17 @@ void CNPC_Ichthyosaur::Spawn( void )
 	//SetTouch( IchTouch );
 
 	CapabilitiesClear();
-	CapabilitiesAdd( bits_CAP_MOVE_FLY | bits_CAP_INNATE_MELEE_ATTACK1 );
+	CapabilitiesAdd( bits_CAP_MOVE_FLY | bits_CAP_INNATE_MELEE_ATTACK1 | bits_CAP_ANIMATEDFACE );
 
 	NPCInit();
 
-	//m_pSwimSound	= ENVELOPE_CONTROLLER.SoundCreate( edict(), CHAN_BODY,	"xxxCONVERTTOGAMESOUNDS!!!npc/ichthyosaur/ich_amb1wav", ATTN_NORM );
-	//m_pVoiceSound	= ENVELOPE_CONTROLLER.SoundCreate( edict(), CHAN_VOICE,	"xxxCONVERTTOGAMESOUNDS!!!npc/ichthyosaur/water_breathwav", ATTN_IDLE );
+	CPASAttenuationFilter filter(this);
+	//m_pSwimSound	= ENVELOPE_CONTROLLER.SoundCreate( filter, entindex(), CHAN_BODY,	"npc/ichthyosaur/ich_amb1.wav", ATTN_NORM );
+	m_pVoiceSound	= ENVELOPE_CONTROLLER.SoundCreate( filter, entindex(), CHAN_VOICE,	"npc/ichthyosaur/water_breath.wav", ATTN_IDLE );
 
-	//ENVELOPE_CONTROLLER.Play( m_pSwimSound,	1.0f, 100 );
-	//ENVELOPE_CONTROLLER.Play( m_pVoiceSound,1.0f, 100 );
+	// Volume set in PreScheduleThink
+	//ENVELOPE_CONTROLLER.Play( m_pSwimSound,	0.0f, 100 );
+	ENVELOPE_CONTROLLER.Play( m_pVoiceSound, 0.0f, 100 );
 
 	BaseClass::Spawn();
 }
@@ -335,12 +402,15 @@ int CNPC_Ichthyosaur::SelectSchedule( void )
 			return SCHED_ICH_DROWN_VICTIM;
 
 		if ( m_flNextBiteTime > gpGlobals->curtime )
-			return	SCHED_PATROL_RUN;
+			return	SCHED_ICH_PATROL_RUN;
 
 		if ( HasCondition( COND_CAN_MELEE_ATTACK1 ) )
 			return	SCHED_MELEE_ATTACK1;
 
-		return SCHED_CHASE_ENEMY;
+		if ( ( GetEnemy() != NULL ) && ( GetEnemy()->GetWaterLevel() > 0 ) )
+			return SCHED_ICH_CHASE_ENEMY;
+
+		return	SCHED_ICH_PATROL_RUN;
 	}
 
 	return BaseClass::SelectSchedule();
@@ -354,15 +424,35 @@ bool CNPC_Ichthyosaur::OverrideMove( float flInterval )
 {
 	m_flGroundSpeed = GetGroundSpeed();
 
-	if ( m_bHasMoveTarget )
+	if ( ( GetEnemy() != NULL ) && ( GetEnemy()->GetWaterLevel() > 0 ) && !IsCurSchedule(SCHED_ICH_DROWN_VICTIM) && !IsCurSchedule(SCHED_ICH_THRASH) )
 	{
-		DoMovement( flInterval, m_vecLastMoveTarget, ICH_MOVETYPE_ARRIVE );
+		DoMovement( flInterval, GetEnemy()->BodyTarget( GetLocalOrigin() ), ICH_MOVETYPE_SEEK);
 	}
 	else
 	{
-		DoMovement( flInterval, GetLocalOrigin(), ICH_MOVETYPE_ARRIVE );
+		//FIXME: ignores waypoint movement but apparently there's no way to advance the path to the actual goal pos
+
+		float timeToUse = flInterval;
+		while (timeToUse > 0)
+		{
+			Vector vecDistToGoal = GetNavigator()->GetGoalPos() - GetAbsOrigin();
+			if (vecDistToGoal.IsLengthLessThan(64))
+			{
+				GetNavigator()->SetRandomGoal(200);
+				TaskComplete();
+			}
+
+			timeToUse -= 0.1;
+		}
+		DoMovement( flInterval, GetNavigator()->GetGoalPos(), ICH_MOVETYPE_ARRIVE);
 	}
+
 	return true;
+}
+
+float CNPC_Ichthyosaur::GetSequenceGroundSpeed(CStudioHdr *pStudioHdr, int iSequence)
+{
+	return GetGroundSpeed();
 }
 
 //-----------------------------------------------------------------------------
@@ -480,7 +570,8 @@ void CNPC_Ichthyosaur::SetPoses( Vector moveRel, float speed )
 	float	movePerc, moveBase;
 
 	//Find out how fast we're moving in our animations boundaries
-	if ( GetIdealActivity() == ACT_WALK )
+	/*
+	if ( m_flGroundSpeed < ( ICH_SWIM_SPEED_RUN - 30 ) )
 	{
 		moveBase = 0.5f;
 		movePerc = moveBase * ( speed / ICH_SWIM_SPEED_WALK );
@@ -490,6 +581,10 @@ void CNPC_Ichthyosaur::SetPoses( Vector moveRel, float speed )
 		moveBase = 1.0f;
 		movePerc = moveBase * ( speed / ICH_SWIM_SPEED_RUN );
 	}
+	*/
+
+	moveBase = 1.0f;
+	movePerc = moveBase * ( speed / m_flGroundSpeed );
 	
 	Vector	tailPosition;
 	float	flSwimSpeed = movePerc;
@@ -546,12 +641,12 @@ void CNPC_Ichthyosaur::SetPoses( Vector moveRel, float speed )
 	m_flSwimSpeed	= ( m_flSwimSpeed * 0.8f ) + ( flSwimSpeed * 0.2f );
 
 	//Pose the body
-	SetPoseParameter( 0, m_flSwimSpeed );
-	SetPoseParameter( 1, m_flTailYaw );
-	SetPoseParameter( 2, m_flTailPitch );
+	SetPoseParameter( "speed", m_flSwimSpeed );
+	SetPoseParameter( "sidetoside", m_flTailYaw );
+	SetPoseParameter( "upanddown", m_flTailPitch );
 	
 	//FIXME: Until the sequence info is reset properly after SetPoseParameter
-	if ( ( GetActivity() == ACT_RUN ) || ( GetActivity() == ACT_WALK ) )
+	if ( ( GetActivity() == ACT_RUN ) )
 	{
 		ResetSequenceInfo();
 	}
@@ -702,7 +797,12 @@ void CNPC_Ichthyosaur::DoMovement( float flInterval, const Vector &MoveTarget, i
 	AddSwimNoise( &workVelocity );
 
 	// Pose the fish properly
-	SetPoses( SteerRel, flLength );
+	float timeToUse = flInterval;
+	while (timeToUse > 0)
+	{
+		SetPoses( SteerRel, flLength );
+		timeToUse -= 0.1;
+	}
 
 	//Drag our victim before moving
 	if ( m_pVictim != NULL )
@@ -728,7 +828,6 @@ void CNPC_Ichthyosaur::DoMovement( float flInterval, const Vector &MoveTarget, i
 	}
 
 	SetAbsVelocity( vecNewVelocity );
-
 }
 
 //-----------------------------------------------------------------------------
@@ -928,6 +1027,7 @@ void CNPC_Ichthyosaur::ClampSteer(Vector &SteerAbs, Vector &SteerRel, Vector &fo
 	SteerRel.z = fUpSteer;
 }
 
+#if 0
 //-----------------------------------------------------------------------------
 // Purpose: 
 // Input  : *pTargetEnt - 
@@ -964,6 +1064,7 @@ void CNPC_Ichthyosaur::MoveFlyExecute( CBaseEntity *pTargetEnt, const Vector &ve
 	m_vecLastMoveTarget	= moveGoal;
 	m_bHasMoveTarget	= true;
 }
+#endif
 
 //-----------------------------------------------------------------------------
 // Purpose: 
@@ -973,7 +1074,7 @@ void CNPC_Ichthyosaur::MoveFlyExecute( CBaseEntity *pTargetEnt, const Vector &ve
 bool CNPC_Ichthyosaur::FVisible( CBaseEntity *pEntity, int traceMask, CBaseEntity **ppBlocker )
 {
 	// don't look through water
-	if ( GetWaterLevel() != pEntity->GetWaterLevel() )
+	if ( pEntity->GetWaterLevel() == 0 )
 		return false;
 
 	return BaseClass::FVisible( pEntity, traceMask, ppBlocker );
@@ -1042,13 +1143,16 @@ void CNPC_Ichthyosaur::Bite( void )
 	}
 	else
 	{
-		pHurt = CheckTraceHullAttack( 108, Vector(-32,-32,-32), Vector(32,32,32), 0, DMG_CLUB );
+		Vector forward;
+		GetVectors(&forward, NULL, NULL);
+		pHurt = CheckTraceHullAttack( WorldSpaceCenter(), ( WorldSpaceCenter() + forward * 90 ), Vector(-32, -32, -64), Vector(32, 32, 32), 0, DMG_CLUB );
 	}
 
 	//Hit something
 	if ( pHurt != NULL )
 	{
 		CTakeDamageInfo info( this, this, sk_ichthyosaur_melee_dmg.GetInt(), DMG_CLUB );
+		info.SetDamage( sk_ichthyosaur_melee_dmg.GetInt() * sk_ichthyosaur_dmg_mult.GetInt() );
 
 		if ( pHurt->IsPlayer() )
 		{
@@ -1056,16 +1160,17 @@ void CNPC_Ichthyosaur::Bite( void )
 
 			if ( pPlayer )
 			{
-				if ( ( ( m_flHoldTime < gpGlobals->curtime ) && ( pPlayer->m_iHealth < (pPlayer->m_iMaxHealth*0.5f)) ) || ( pPlayer->GetWaterLevel() < 1 ) )
+				if ( ( ( pPlayer->m_iHealth < ( pPlayer->m_iMaxHealth*0.5f ) ) ) || ( pPlayer->GetWaterLevel() < 1 ) )
 				{
-					//EnsnareVictim( pHurt );
+					if (npc_ichthyosaur_ensnare.GetBool())
+					{
+						EnsnareVictim(pHurt);
+					}
 				}
-				else
-				{
-					info.SetDamage( sk_ichthyosaur_melee_dmg.GetInt() * 3 );
-				}
-				CalculateMeleeDamageForce( &info, GetAbsVelocity(), pHurt->GetAbsOrigin() );
-				pHurt->TakeDamage( info );
+				//else
+				//{
+				//	info.SetDamage( sk_ichthyosaur_melee_dmg.GetInt() * 3 );
+				//}
 
 				color32 red = {64, 0, 0, 255};
 				UTIL_ScreenFade( pPlayer, red, 0.5, 0, FFADE_IN  );
@@ -1082,11 +1187,9 @@ void CNPC_Ichthyosaur::Bite( void )
 				pPlayer->SnapEyeAngles( angles );
 			}
 		}
-		else
-		{
-			CalculateMeleeDamageForce( &info, GetAbsVelocity(), pHurt->GetAbsOrigin() );
-			pHurt->TakeDamage( info );
-		}
+
+		CalculateMeleeDamageForce( &info, GetAbsVelocity(), pHurt->GetAbsOrigin() );
+		pHurt->TakeDamage( info );
 
 		m_flNextBiteTime = gpGlobals->curtime + random->RandomFloat( 2.0f, 4.0f );
 
@@ -1136,39 +1239,6 @@ bool CNPC_Ichthyosaur::Beached( void )
 void CNPC_Ichthyosaur::PrescheduleThink( void )
 {
 	BaseClass::PrescheduleThink();
-	
-	//Ambient sounds
-	/*
-	if ( random->RandomInt( 0, 20 ) == 10 )
-	{
-		if ( random->RandomInt( 0, 1 ) )
-		{
-			ENVELOPE_CONTROLLER.SoundChangeVolume( m_pSwimSound, random->RandomFloat( 0.0f, 0.5f ), 1.0f );
-		}
-		else
-		{
-			ENVELOPE_CONTROLLER.SoundChangeVolume( m_pVoiceSound, random->RandomFloat( 0.0f, 0.5f ), 1.0f );
-		}
-	}
-	*/
-
-	//Pings
-	if ( m_flNextPingTime < gpGlobals->curtime )
-	{
-		m_flNextPingTime = gpGlobals->curtime + random->RandomFloat( 3.0f, 8.0f );
-	}
-	
-	//Growls
-	if ( ( m_NPCState == NPC_STATE_COMBAT || m_NPCState == NPC_STATE_ALERT ) && ( m_flNextGrowlTime < gpGlobals->curtime ) )
-	{
-		m_flNextGrowlTime = gpGlobals->curtime + random->RandomFloat( 2.0f, 6.0f );
-	}
-
-	//Randomly emit bubbles
-	if ( random->RandomInt( 0, 10 ) == 0 )
-	{
-		UTIL_Bubbles( GetAbsOrigin()+(GetHullMins()*0.5f), GetAbsOrigin()+(GetHullMaxs()*0.5f), 1 );
-	}
 
 	//Check our water level
 	if ( GetWaterLevel() != 3 )
@@ -1185,10 +1255,49 @@ void CNPC_Ichthyosaur::PrescheduleThink( void )
 				vecNewVelocity[2] = 8.0f;
 				SetAbsVelocity( vecNewVelocity );
 			}
+
+			// Mute ambient sounds
+			//ENVELOPE_CONTROLLER.SoundChangeVolume( m_pSwimSound, 0.0f, 1.0f );
+			ENVELOPE_CONTROLLER.SoundChangeVolume( m_pVoiceSound, 0.0f, 1.0f );
 		}
-		else
+		//else
+		//{
+		//	//TODO: Wake effects
+		//}
+	}
+	else
+	{
+		//Ambient sounds
+		if ( random->RandomInt( 0, 20 ) == 10 )
 		{
-			//TODO: Wake effects
+			//if ( random->RandomInt( 0, 1 ) )
+			//{
+			//	ENVELOPE_CONTROLLER.SoundChangeVolume( m_pSwimSound, random->RandomFloat( 0.3f, 0.8f ), 1.0f );
+			//}
+			//else
+			//{
+				ENVELOPE_CONTROLLER.SoundChangeVolume( m_pVoiceSound, random->RandomFloat( 0.3f, 0.8f ), 1.0f );
+			//}
+		}
+
+		//Pings
+		if ( m_flNextPingTime < gpGlobals->curtime )
+		{
+			m_flNextPingTime = gpGlobals->curtime + random->RandomFloat( 3.0f, 8.0f );
+			//EmitSound( "NPC_Ichthyosaur.Ping" );
+		}
+		
+		//Growls
+		if ( ( m_NPCState == NPC_STATE_COMBAT || m_NPCState == NPC_STATE_ALERT ) && ( m_flNextGrowlTime < gpGlobals->curtime ) )
+		{
+			m_flNextGrowlTime = gpGlobals->curtime + random->RandomFloat( 2.0f, 6.0f );
+			//EmitSound( "NPC_Ichthyosaur.Growl" );
+		}
+
+		//Randomly emit bubbles
+		if ( random->RandomInt( 0, 10 ) == 0 )
+		{
+			UTIL_Bubbles( GetAbsOrigin()+(GetHullMins()*0.5f), GetAbsOrigin()+(GetHullMaxs()*0.5f), 1 );
 		}
 	}
 
@@ -1236,15 +1345,24 @@ void CNPC_Ichthyosaur::EnsnareVictim( CBaseEntity *pVictim )
 {
 	CBaseCombatCharacter* pBCC = (CBaseCombatCharacter *) pVictim;
 
-	if ( pBCC && pBCC->DispatchInteraction( g_interactionBarnacleVictimGrab, NULL, this ) )
+	if ( pBCC && pBCC->IsAlive() && !pBCC->IsInAVehicle() && !pBCC->IsEFlagSet( EFL_IS_BEING_LIFTED_BY_BARNACLE ) )
 	{
 		if ( pVictim->IsPlayer() )
 		{
 			CBasePlayer	*pPlayer = dynamic_cast< CBasePlayer * >((CBaseEntity *) pVictim);
-
+			
 			if ( pPlayer )
 			{
+				// if player is on the ladder, disengage him
+				if (pPlayer->GetMoveType() == MOVETYPE_LADDER)
+				{
+					pPlayer->ExitLadder();
+				}
+
 				m_flHoldTime = MAX( gpGlobals->curtime+3.0f, pPlayer->PlayerDrownTime() - 2.0f );
+
+				m_bEnsnare = true;
+				pPlayer->SetOwnerEntity( this );
 			}
 		}
 		else
@@ -1253,7 +1371,9 @@ void CNPC_Ichthyosaur::EnsnareVictim( CBaseEntity *pVictim )
 		}
 	
 		m_pVictim = pVictim;
-		m_pVictim->AddSolidFlags( FSOLID_NOT_SOLID );
+
+		// Set our touch flag so no one else tries to grab us this frame
+		m_pVictim->AddEFlags( EFL_IS_BEING_LIFTED_BY_BARNACLE );
 
 		SetSchedule( SCHED_ICH_DROWN_VICTIM );
 	}
@@ -1268,7 +1388,19 @@ void CNPC_Ichthyosaur::ReleaseVictim( void )
 
 	pBCC->DispatchInteraction( g_interactionBarnacleVictimReleased, NULL, this );
 
-	m_pVictim->RemoveSolidFlags( FSOLID_NOT_SOLID );
+	// Remove grab flag
+	m_pVictim->RemoveEFlags( EFL_IS_BEING_LIFTED_BY_BARNACLE );
+	if ( m_bEnsnare )
+	{
+		m_bEnsnare = false;
+		m_pVictim->SetOwnerEntity( NULL );
+
+		// Throw ourselves and the player away so we don't get stuck
+		Vector forward;
+		GetVectors( &forward, NULL, NULL );
+		ApplyAbsVelocityImpulse( forward * -250 );
+		m_pVictim->ApplyAbsVelocityImpulse( forward * 250 );
+	}
 
 	m_pVictim			= NULL;
 	m_flNextBiteTime	= gpGlobals->curtime + 8.0f;
@@ -1284,11 +1416,11 @@ float CNPC_Ichthyosaur::GetGroundSpeed( void )
 	if ( m_flHoldTime > gpGlobals->curtime )
 		return	ICH_SWIM_SPEED_WALK/2.0f;
 
-	if ( GetIdealActivity() == ACT_WALK )
+	if ( GetEnemy() == NULL )
 		return ICH_SWIM_SPEED_WALK;
 
 	if ( GetIdealActivity() == ACT_ICH_THRASH )
-		return ICH_SWIM_SPEED_WALK;
+		return ICH_SWIM_SPEED_RUN;
 
 	return ICH_SWIM_SPEED_RUN;
 }
@@ -1301,10 +1433,14 @@ float CNPC_Ichthyosaur::GetGroundSpeed( void )
 int CNPC_Ichthyosaur::TranslateSchedule( int type )
 {
 	if ( type == SCHED_CHASE_ENEMY )	return SCHED_ICH_CHASE_ENEMY;
-	//if ( type == SCHED_IDLE_STAND )		return SCHED_PATROL_WALK;
+	if ( type == SCHED_IDLE_STAND )		return SCHED_ICH_PATROL_RUN;
+	if ( type == SCHED_ALERT_STAND )	return SCHED_ICH_PATROL_RUN;
+	if ( type == SCHED_PATROL_WALK )	return SCHED_ICH_PATROL_RUN;
 	if ( type == SCHED_PATROL_RUN )		return SCHED_ICH_PATROL_RUN;
-	if ( type == SCHED_PATROL_WALK )	return SCHED_ICH_PATROL_WALK;
 	if ( type == SCHED_MELEE_ATTACK1 )	return SCHED_ICH_MELEE_ATTACK1;
+	// FIXME: PATROL_RUN causes the path to be recalculated every time it is shot at nearby
+	if ( type == SCHED_ALERT_FACE )		return SCHED_ICH_PATROL_RUN;
+	if ( type == SCHED_ALERT_FACE_BESTSOUND ) return SCHED_ICH_PATROL_RUN;
 
 	return BaseClass::TranslateSchedule( type );
 }
@@ -1328,7 +1464,7 @@ void CNPC_Ichthyosaur::StartTask( const Task_t *pTask )
 			{
 				if (!GetNavigator()->SetRandomGoal( pTask->flTaskData ) )
 				{
-					TaskFail(FAIL_NO_REACHABLE_NODE);
+					TaskFail( FAIL_NO_REACHABLE_NODE );
 					return;
 				}
 			}
@@ -1351,11 +1487,6 @@ void CNPC_Ichthyosaur::StartTask( const Task_t *pTask )
 		}
 		break;
 
-	case TASK_MELEE_ATTACK1:
-		m_flPlaybackRate = 1.0f;
-		BaseClass::StartTask(pTask);
-		break;
-
 	default:
 		BaseClass::StartTask(pTask);
 		break;
@@ -1370,10 +1501,8 @@ void CNPC_Ichthyosaur::RunTask( const Task_t *pTask )
 {
 	switch ( pTask->iTask )
 	{
+	// Handled in StartTask() instead.
 	case TASK_ICH_GET_PATH_TO_RANDOM_NODE:
-		return;
-		break;
-
 	case TASK_ICH_GET_PATH_TO_DROWN_NODE:
 		return;
 		break;
@@ -1396,8 +1525,9 @@ float CNPC_Ichthyosaur::MaxYawSpeed( void )
 	if ( GetIdealActivity() == ACT_ICH_THRASH )
 		return 16.0f;
 
+	// Default MaxYawSpeed is 45
 	//Ramp up the yaw speed as we increase our speed
-	return ICH_MIN_TURN_SPEED + ( (ICH_MAX_TURN_SPEED-ICH_MIN_TURN_SPEED) * ( fabs(GetAbsVelocity().Length()) / ICH_SWIM_SPEED_RUN ) );
+	return ICH_MIN_TURN_SPEED + ( ( ICH_MAX_TURN_SPEED - ICH_MIN_TURN_SPEED ) * ( fabs( GetAbsVelocity().Length() ) / ICH_SWIM_SPEED_RUN ) + 15.0f );
 }
 
 //-----------------------------------------------------------------------------
@@ -1417,6 +1547,51 @@ float CNPC_Ichthyosaur::GetDefaultNavGoalTolerance()
 	return GetHullWidth()*2.0f;	
 }
 
+//-----------------------------------------------------------------------------
+// Purpose: 
+// Input  : &force - 
+// Output : Returns true on success, false on failure.
+//-----------------------------------------------------------------------------
+bool CNPC_Ichthyosaur::BecomeRagdollOnClient(const Vector &force)
+{
+	if (!CanBecomeRagdoll())
+		return false;
+
+	// Become server-side ragdoll
+	CTakeDamageInfo	info;
+
+	// Fake the info
+	info.SetDamageType(DMG_GENERIC);
+	info.SetDamageForce(force);
+	info.SetDamagePosition(WorldSpaceCenter());
+
+	CBaseEntity *pRagdoll = CreateServerRagdoll(this, 0, info, COLLISION_GROUP_NONE);
+
+	// Transfer our name to the new ragdoll
+	pRagdoll->SetName(GetEntityName());
+	//pRagdoll->SetCollisionGroup(COLLISION_GROUP_DEBRIS);
+
+	// Get rid of our old body
+	UTIL_Remove(this);
+
+	return true;
+}
+
+//-----------------------------------------------------------------------------
+// Purpose: 
+// Input  : baseAct - 
+// Output : Activity
+//-----------------------------------------------------------------------------
+Activity CNPC_Ichthyosaur::NPC_TranslateActivity(Activity baseAct)
+{
+	if ( baseAct == ACT_IDLE )
+		return (Activity) ACT_RUN;
+
+	if ( baseAct == ACT_FLY )
+		return (Activity) ACT_RUN;
+
+	return baseAct;
+}
 
 //-----------------------------------------------------------------------------
 //
@@ -1433,10 +1608,13 @@ AI_DEFINE_SCHEDULE
 	SCHED_ICH_CHASE_ENEMY,
 
 	"	Tasks"
-	"		TASK_SET_FAIL_SCHEDULE			SCHEDULE:SCHED_ICH_PATROL_WALK"
+	"		TASK_SET_FAIL_SCHEDULE			SCHEDULE:SCHED_ICH_PATROL_RUN"
 	"		TASK_SET_TOLERANCE_DISTANCE		64"
-	"		TASK_SET_GOAL					GOAL:ENEMY"
-	"		TASK_GET_PATH_TO_GOAL			PATH:TRAVEL"
+	"		TASK_STOP_MOVING				0"
+	//"		TASK_SET_GOAL					GOAL:ENEMY"
+	//"		TASK_GET_PATH_TO_GOAL			PATH:TRAVEL"
+	"		TASK_GET_CHASE_PATH_TO_ENEMY	300"
+	"		TASK_FACE_ENEMY			0"
 	"		TASK_RUN_PATH					0"
 	"		TASK_WAIT_FOR_MOVEMENT			0"
 	""
@@ -1444,9 +1622,11 @@ AI_DEFINE_SCHEDULE
 	"		COND_NEW_ENEMY"
 	"		COND_ENEMY_DEAD"
 	"		COND_ENEMY_UNREACHABLE"
+	"		COND_ENEMY_OCCLUDED"
 	"		COND_CAN_MELEE_ATTACK1"
 	"		COND_TOO_CLOSE_TO_ATTACK"
 	"		COND_LOST_ENEMY"
+	"		COND_ENEMY_WENT_NULL"
 	"		COND_TASK_FAILED"
 );
 	
@@ -1459,35 +1639,12 @@ AI_DEFINE_SCHEDULE
 	SCHED_ICH_PATROL_RUN,
 
 	"	Tasks"
-	"		TASK_SET_FAIL_SCHEDULE				SCHEDULE:SCHED_COMBAT_FACE"
+	//"		TASK_SET_FAIL_SCHEDULE				SCHEDULE:SCHED_ICH_THRASH"
 	"		TASK_SET_TOLERANCE_DISTANCE			64"
 	"		TASK_SET_ROUTE_SEARCH_TIME			4"
 	"		TASK_ICH_GET_PATH_TO_RANDOM_NODE	200"
+	//"		TASK_FACE_PATH						0"
 	"		TASK_RUN_PATH						0"
-	"		TASK_WAIT_FOR_MOVEMENT				0"
-	""
-	"	Interrupts"
-	"		COND_CAN_MELEE_ATTACK1"
-	"		COND_GIVE_WAY"
-	"		COND_NEW_ENEMY"
-	"		COND_LIGHT_DAMAGE"
-	"		COND_HEAVY_DAMAGE"
-);
-
-//==================================================
-// SCHED_ICH_PATROL_WALK
-//==================================================
-
-AI_DEFINE_SCHEDULE
-(
-	SCHED_ICH_PATROL_WALK,
-
-	"	Tasks"
-	"		TASK_SET_FAIL_SCHEDULE				SCHEDULE:SCHED_COMBAT_FACE"
-	"		TASK_SET_TOLERANCE_DISTANCE			64"
-	"		TASK_SET_ROUTE_SEARCH_TIME			4"
-	"		TASK_ICH_GET_PATH_TO_RANDOM_NODE	200"
-	"		TASK_WALK_PATH						0"
 	"		TASK_WAIT_FOR_MOVEMENT				0"
 	""
 	"	Interrupts"
@@ -1507,7 +1664,7 @@ AI_DEFINE_SCHEDULE
 	SCHED_ICH_DROWN_VICTIM,
 
 	"	Tasks"
-	"		TASK_SET_FAIL_SCHEDULE				SCHEDULE:SCHED_COMBAT_FACE"
+	"		TASK_SET_FAIL_SCHEDULE				SCHEDULE:SCHED_ICH_PATROL_RUN"
 	"		TASK_SET_TOLERANCE_DISTANCE			64"
 	"		TASK_SET_ROUTE_SEARCH_TIME			4"
 	"		TASK_ICH_GET_PATH_TO_DROWN_NODE		256"
@@ -1516,8 +1673,13 @@ AI_DEFINE_SCHEDULE
 	""
 	"	Interrupts"
 	"		COND_NEW_ENEMY"
+	"		COND_ENEMY_DEAD"
+	"		COND_ENEMY_OCCLUDED"
+	"		COND_LOST_ENEMY"
+	"		COND_ENEMY_WENT_NULL"
 	"		COND_LIGHT_DAMAGE"
 	"		COND_HEAVY_DAMAGE"
+	"		COND_TASK_FAILED"
 );
 
 //=========================================================
@@ -1547,12 +1709,14 @@ AI_DEFINE_SCHEDULE
 	SCHED_ICH_THRASH,
 
 	"	Tasks"
-	"		TASK_SET_FAIL_SCHEDULE				SCHEDULE:SCHED_COMBAT_FACE"
+	"		TASK_SET_FAIL_SCHEDULE				SCHEDULE:SCHED_COMBAT_FACE" // Stuck on land. Suffocation in air here?
 	"		TASK_SET_TOLERANCE_DISTANCE			64"
 	"		TASK_SET_ROUTE_SEARCH_TIME			4"
-	"		TASK_ICH_GET_PATH_TO_RANDOM_NODE	64"
+	"		TASK_ICH_GET_PATH_TO_RANDOM_NODE	300" //64
+	"		TASK_FACE_PATH						0"
 	"		TASK_ICH_THRASH_PATH				0"
 	"		TASK_WAIT_FOR_MOVEMENT				0"
 	""
 	"	Interrupts"
+	"		COND_TASK_FAILED"
 );
