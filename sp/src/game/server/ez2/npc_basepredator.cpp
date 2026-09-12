@@ -23,6 +23,7 @@
 
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
+#include <Sprite.h>
 
 ConVar ai_debug_predator( "ai_debug_predator", "0" );
 ConVar sv_predator_heal_render_effects( "sv_predator_heal_render_effects", "1", FCVAR_NONE, "Should predators like bullsquids turn green after healing?" );
@@ -165,7 +166,8 @@ Class_T	CNPC_BasePredator::Classify( void )
 	if (m_bDormant)
 		return CLASS_NONE;
 
-	return CLASS_ALIEN_PREDATOR;
+	//return CLASS_ALIEN_PREDATOR; will add this later for now...
+	return CLASS_ZOMBIE;
 }
 
 //=========================================================
@@ -277,19 +279,9 @@ int CNPC_BasePredator::TranslateSchedule( int scheduleType )
 		}
 		break;
 
-	// Replace alert stand with idle wander if applicable
+		// Replace alert stand with idle wander if applicable
 	case SCHED_ALERT_STAND:
-		if ( m_tWanderState > WANDER_STATE_NEVER && m_tWanderState < WANDER_STATE_IDLE_ONLY ) {
-
-			if ( HL2GameRules()->IsBeastInStealthMode() )
-			{
-				// If we haven't seen an enemy in 20 seconds, go back to idle
-				if (gpGlobals->curtime - GetLastEnemyTime() > 20.0f)
-				{
-					SetIdealState( NPC_STATE_IDLE );
-					SetCondition( COND_IDLE_INTERRUPT );
-				}
-			}
+		if (m_tWanderState > WANDER_STATE_NEVER && m_tWanderState < WANDER_STATE_IDLE_ONLY) {
 
 			return SCHED_PREDATOR_WANDER;
 		}
@@ -434,12 +426,6 @@ void CNPC_BasePredator::BuildScheduleTestBits()
 		SetCustomInterruptCondition( COND_CAN_MELEE_ATTACK1 );
 	}
 
-	// If we're an absolute beast, allow our chase schedule to be interrupted by obstructions
-	if ( ShouldImmediatelyAttackObstructions() && IsCurSchedule( SCHED_CHASE_ENEMY ) )
-	{
-		SetCustomInterruptCondition( COND_PREDATOR_OBSTRUCTED );
-	}
-
 	// Like zombies, ignore damage if we're attacking.
 	switch (GetActivity())
 	{
@@ -450,62 +436,6 @@ void CNPC_BasePredator::BuildScheduleTestBits()
 		ClearCustomInterruptCondition( COND_HEAVY_DAMAGE );
 		break;
 	}
-}
-
-//-----------------------------------------------------------------------------
-// Purpose: 
-//-----------------------------------------------------------------------------
-bool CNPC_BasePredator::OnObstructionPreSteer( AILocalMoveGoal_t *pMoveGoal, float distClear, AIMoveResult_t *pResult )
-{
-	if ( pMoveGoal->directTrace.pObstruction && !pMoveGoal->directTrace.pObstruction->IsWorld() && GetGroundEntity() != pMoveGoal->directTrace.pObstruction )
-	{
-		if ( ShouldAttackObstruction( pMoveGoal->directTrace.pObstruction ) )
-		{
-			m_hObstructor = pMoveGoal->directTrace.pObstruction;
-			SetCondition( COND_PREDATOR_OBSTRUCTED );
-		}
-	}
-
-	return BaseClass::OnObstructionPreSteer( pMoveGoal, distClear, pResult );
-}
-
-//-----------------------------------------------------------------------------
-// Purpose: 
-//-----------------------------------------------------------------------------
-bool CNPC_BasePredator::ShouldAttackObstruction( CBaseEntity *pEntity )
-{
-	if (!npc_predator_obstruction_behavior.GetBool())
-		return false;
-
-	// Don't attack obstructions if we can't melee attack
-	if ((CapabilitiesGet() & bits_CAP_INNATE_MELEE_ATTACK1) == 0)
-		return false;
-
-	// Only attack combat characters and physics props
-	if ( !pEntity->MyCombatCharacterPointer() && pEntity->GetMoveType() != MOVETYPE_VPHYSICS )
-		return false;
-
-	// Don't attack props which don't have motion enabled or have more than 2x mass than us
-	if ( pEntity->VPhysicsGetObject() && (!pEntity->VPhysicsGetObject()->IsMotionEnabled() || pEntity->VPhysicsGetObject()->GetMass()*2 > GetMass()) )
-		return false;
-
-	// Don't attack NPCs in the same squad
-	if (pEntity->IsNPC() && pEntity->MyNPCPointer()->GetSquad() == GetSquad() && GetSquad() != NULL)
-		return false;
-
-	return true;
-}
-
-//-----------------------------------------------------------------------------
-// Purpose: If true, NPCs will immediately attack obstructions instead of waiting for the pathfinder to find a way around
-//-----------------------------------------------------------------------------
-bool CNPC_BasePredator::ShouldImmediatelyAttackObstructions()
-{
-	// Babies are too small to throw their own weight around
-	if (IsBaby())
-		return false;
-
-	return true;
 }
 
 //-----------------------------------------------------------------------------
@@ -689,8 +619,8 @@ bool CNPC_BasePredator::FValidateHintType( CAI_Hint *pHint )
 	if ( pHint->HintType() == HINT_HL1_WORLD_HUMAN_BLOOD )
 		return true;
 
-	if ( pHint->HintType() == HINT_BEAST_HOME || pHint->HintType() == HINT_BEAST_FRUSTRATION )
-		return true;
+	/*if ( pHint->HintType() == HINT_BEAST_HOME || pHint->HintType() == HINT_BEAST_FRUSTRATION )
+		return true;*/
 
 	DevMsg( "Couldn't validate hint type" );
 
@@ -1454,61 +1384,61 @@ const float AVOID_TEST_DIST = 18.0f * 12.0f;
 // Purpose -	Allows predators to avoid zombie goo and fires.
 //				Blixibon
 //-----------------------------------------------------------------------------
-bool CNPC_BasePredator::OverrideMove( float flInterval )
+bool CNPC_BasePredator::OverrideMove(float flInterval)
 {
-	bool overrode = BaseClass::OverrideMove( flInterval );
+	bool overrode = BaseClass::OverrideMove(flInterval);
 
 	if (!overrode && GetNavigator()->GetGoalType() != GOALTYPE_NONE)
 	{
-		string_t iszEnvFire = AllocPooledString( "env_fire" );
-		string_t iszEntityFlame = AllocPooledString( "entityflame" );
+		string_t iszEnvFire = AllocPooledString("env_fire");
+		string_t iszEntityFlame = AllocPooledString("entityflame");
 		string_t iszZombieGoo = gm_iszGooPuddle;
 
-		CBaseEntity *pEntity = NULL;
+		CBaseEntity* pEntity = NULL;
 		trace_t tr;
 
 		// For each possible entity, compare our known interesting classnames to its classname, via ID
-		while ((pEntity = OverrideMoveCache_FindTargetsInRadius( pEntity, GetAbsOrigin(), AVOID_TEST_DIST )) != NULL)
+		while ((pEntity = OverrideMoveCache_FindTargetsInRadius(pEntity, GetAbsOrigin(), AVOID_TEST_DIST)) != NULL)
 		{
 			// Handle each type
 			if (pEntity->m_iClassname == iszEnvFire)
 			{
 				Vector vMins, vMaxs;
-				if (FireSystem_GetFireDamageDimensions( pEntity, &vMins, &vMaxs ))
+				if (FireSystem_GetFireDamageDimensions(pEntity, &vMins, &vMaxs))
 				{
-					UTIL_TraceLine( WorldSpaceCenter(), pEntity->WorldSpaceCenter(), MASK_FIRE_SOLID, pEntity, COLLISION_GROUP_NONE, &tr );
+					UTIL_TraceLine(WorldSpaceCenter(), pEntity->WorldSpaceCenter(), MASK_FIRE_SOLID, pEntity, COLLISION_GROUP_NONE, &tr);
 					if (tr.fraction == 1.0 && !tr.startsolid)
 					{
-						GetLocalNavigator()->AddObstacle( pEntity->GetAbsOrigin(), ((vMaxs.x - vMins.x) * 1.414 * 0.5) + 6.0, AIMST_AVOID_DANGER );
+						GetLocalNavigator()->AddObstacle(pEntity->GetAbsOrigin(), ((vMaxs.x - vMins.x) * 1.414 * 0.5) + 6.0, AIMST_AVOID_DANGER);
 					}
 				}
 			}
 			else if (pEntity->m_iClassname == iszEntityFlame && pEntity->GetParent() && !pEntity->GetParent()->IsNPC())
 			{
-				float flDist = pEntity->WorldSpaceCenter().DistTo( WorldSpaceCenter() );
+				float flDist = pEntity->WorldSpaceCenter().DistTo(WorldSpaceCenter());
 
 				if (flDist > PREDATOR_AVOID_ENTITY_FLAME_RADIUS)
 				{
 					// If I'm not in the flame, prevent me from getting close to it.
 					// If I AM in the flame, avoid placing an obstacle until the flame frightens me away from itself.
-					UTIL_TraceLine( WorldSpaceCenter(), pEntity->WorldSpaceCenter(), MASK_BLOCKLOS, pEntity, COLLISION_GROUP_NONE, &tr );
+					UTIL_TraceLine(WorldSpaceCenter(), pEntity->WorldSpaceCenter(), MASK_BLOCKLOS, pEntity, COLLISION_GROUP_NONE, &tr);
 					if (tr.fraction == 1.0 && !tr.startsolid)
 					{
-						GetLocalNavigator()->AddObstacle( pEntity->WorldSpaceCenter(), PREDATOR_AVOID_ENTITY_FLAME_RADIUS, AIMST_AVOID_OBJECT );
+						GetLocalNavigator()->AddObstacle(pEntity->WorldSpaceCenter(), PREDATOR_AVOID_ENTITY_FLAME_RADIUS, AIMST_AVOID_OBJECT);
 					}
 				}
 			}
-			else if (pEntity->m_iClassname == iszZombieGoo && ShouldAvoidGoo() )
+			else if (pEntity->m_iClassname == iszZombieGoo)
 			{
-				float flDist = pEntity->WorldSpaceCenter().DistTo( WorldSpaceCenter() );
+				float flDist = pEntity->WorldSpaceCenter().DistTo(WorldSpaceCenter());
 				if (flDist > 50.0f)
 				{
 					// If I'm not in the goo, prevent me from getting close to it.
 					// If I AM in the goo, avoid placing an obstacle until the goo frightens me away from itself.
-					UTIL_TraceLine( WorldSpaceCenter(), pEntity->WorldSpaceCenter(), MASK_BLOCKLOS, pEntity, COLLISION_GROUP_NONE, &tr );
+					UTIL_TraceLine(WorldSpaceCenter(), pEntity->WorldSpaceCenter(), MASK_BLOCKLOS, pEntity, COLLISION_GROUP_NONE, &tr);
 					if (tr.fraction == 1.0 && !tr.startsolid)
 					{
-						GetLocalNavigator()->AddObstacle( pEntity->WorldSpaceCenter(), 50.0f, AIMST_AVOID_OBJECT );
+						GetLocalNavigator()->AddObstacle(pEntity->WorldSpaceCenter(), 50.0f, AIMST_AVOID_OBJECT);
 					}
 				}
 			}

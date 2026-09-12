@@ -82,14 +82,7 @@ void CNPC_Bullsquid::Spawn()
 	AddSolidFlags( FSOLID_NOT_STANDABLE );
 	SetMoveType( MOVETYPE_STEP );
 
-	if (m_tEzVariant == EZ_VARIANT_RAD)
-	{
-		SetBloodColor( BLOOD_COLOR_BLUE );
-	}
-	else
-	{
-		SetBloodColor( BLOOD_COLOR_GREEN );
-	}
+	SetBloodColor( BLOOD_COLOR_GREEN );
 	
 	SetRenderColor( 255, 255, 255, 255 );
 	
@@ -139,18 +132,7 @@ void CNPC_Bullsquid::Precache()
 
 	if ( GetModelName() == NULL_STRING )
 	{
-		switch (m_tEzVariant)
-		{
-			case EZ_VARIANT_XEN:
-				SetModelName( AllocPooledString( "models/bullsquid_xen.mdl" ) );
-				break;
-			case EZ_VARIANT_RAD:
-				SetModelName( AllocPooledString( "models/bullsquid_rad.mdl" ) );
-				break;
-			default:
-				SetModelName( AllocPooledString( "models/bullsquid.mdl" ) );
-				break;
-		}
+		SetModelName( AllocPooledString( "models/bullsquid.mdl" ) );
 	}
 
 	if ( m_AdultModelName == NULL_STRING )
@@ -163,22 +145,11 @@ void CNPC_Bullsquid::Precache()
 	// If there is no baby model name, use the same model as regular
 	if ( m_BabyModelName == NULL_STRING )
 	{
-		switch (m_tEzVariant)
-		{
-		case EZ_VARIANT_XEN:
-			m_BabyModelName = AllocPooledString( "models/babysquid_xen.mdl" );
-			break;
-		case EZ_VARIANT_RAD:
-			m_BabyModelName = AllocPooledString( "models/babysquid_rad.mdl" );
-			break;
-		default:
-			m_BabyModelName = AllocPooledString( "models/babysquid.mdl" );
-			break;
-		}
+		m_BabyModelName = AllocPooledString( "models/babysquid.mdl" );
 	}
 
 	// If there is no baby model name, use the same model as regular
-	if ( m_EggModelName == NULL_STRING )
+	/*if (m_EggModelName == NULL_STRING)
 	{
 		switch (m_tEzVariant)
 		{
@@ -192,7 +163,7 @@ void CNPC_Bullsquid::Precache()
 			m_EggModelName = AllocPooledString( "models/eggs/bullsquid_egg.mdl" );
 			break;
 		}
-	}
+	}*/
 
 	PrecacheModel( STRING( GetModelName() ) );
 	PrecacheModel( STRING( m_BabyModelName ) );
@@ -202,14 +173,7 @@ void CNPC_Bullsquid::Precache()
 
 	UTIL_PrecacheOther( "grenade_spit" );
 
-	if (m_tEzVariant == EZ_VARIANT_RAD)
-	{
-		PrecacheParticleSystem( "blood_impact_blue_01" );
-	}
-	else
-	{
-		PrecacheParticleSystem( "blood_impact_yellow_01" );
-	}
+	PrecacheParticleSystem( "blood_impact_yellow_01" );
 
 	// Use this gib particle system to show baby squids 'molting'
 	PrecacheParticleSystem( "bullsquid_explode" );
@@ -1069,14 +1033,7 @@ bool CNPC_Bullsquid::SpawnNPC( const Vector position, const QAngle angle )
 {
 	CAI_BaseNPC * spawned;
 
-	if (sk_bullsquid_lay_eggs.GetBool())
-	{
-		spawned = SpawnEgg( position, angle );
-	}
-	else
-	{
-		spawned = SpawnLive( position, true );
-	}
+	spawned = SpawnLive( position, true );
 
 	if ( spawned != NULL )
 	{
@@ -1092,7 +1049,7 @@ bool CNPC_Bullsquid::SpawnNPC( const Vector position, const QAngle angle )
 // Purpose: Create a new bullsquid egg
 // Output : True if the new egg is created
 //-----------------------------------------------------------------------------
-CNPC_Egg * CNPC_Bullsquid::SpawnEgg( const Vector position, const QAngle angle )
+/*CNPC_Egg * CNPC_Bullsquid::SpawnEgg( const Vector position, const QAngle angle )
 {
 	// Try to create entity
 	CNPC_Egg *pEgg = static_cast< CNPC_Egg * >(CreateEntityByName( "npc_egg" ));
@@ -1139,7 +1096,7 @@ CNPC_Egg * CNPC_Bullsquid::SpawnEgg( const Vector position, const QAngle angle )
 
 	// Returns NULL if the egg could not be instantiated
 	return pEgg;
-}
+}*/
 
 //-----------------------------------------------------------------------------
 // Purpose: Create a new baby bullsquid
@@ -1153,7 +1110,7 @@ CNPC_Bullsquid * CNPC_Bullsquid::SpawnLive( const Vector position, bool isBaby )
 	if ( pChild )
 	{
 		pChild->m_bIsBaby = isBaby;
-		pChild->m_tEzVariant = this->m_tEzVariant;
+		//pChild->m_tEzVariant = this->m_tEzVariant;
 		pChild->m_tWanderState = this->m_tWanderState;
 		pChild->m_bSpawningEnabled = true;
 		pChild->m_nSkin = this->m_nSkin;

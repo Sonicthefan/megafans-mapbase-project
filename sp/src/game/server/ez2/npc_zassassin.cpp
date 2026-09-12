@@ -67,7 +67,7 @@
 #include "ammodef.h"
 #include "vehicle_base.h"
 #include "ai_squad.h"
-#include "ez2_player.h" // Needed to dispatch response from here - probably should be moved elsewhere
+#include "player.h" // Needed to dispatch response from here - probably should be moved elsewhere
 
 #define ZOMBIE_BURN_TIME		10  // If ignited, burn for this many seconds
 #define ZOMBIE_BURN_TIME_NOISE	2   // Give or take this many seconds.
@@ -196,7 +196,7 @@ void CGonomeSpit::Shoot( CBaseEntity *pOwner, int nGonomeSpitSprite, CSprite * p
 	CGonomeSpit *pSpit = CREATE_ENTITY( CGonomeSpit, "squidspit" );
 	pSpit->m_nGonomeSpitSprite = nGonomeSpitSprite;
 	pSpit->SetOwnerEntity( pOwner );
-	pSpit->m_bGoo = (pSpit->GetOwnerEntity() && pSpit->GetOwnerEntity()->IsNPC()) ? pSpit->GetOwnerEntity()->MyNPCPointer()->m_tEzVariant == EZ_VARIANT_RAD : false;
+	//pSpit->m_bGoo = (pSpit->GetOwnerEntity() && pSpit->GetOwnerEntity()->IsNPC()) ? pSpit->GetOwnerEntity()->MyNPCPointer()->m_tEzVariant == EZ_VARIANT_RAD : false;
 	pSpit->Spawn();
 	
 	UTIL_SetOrigin( pSpit, vecStart );
@@ -300,14 +300,7 @@ void CNPC_Gonome::Spawn()
 	AddSolidFlags( FSOLID_NOT_STANDABLE );
 	SetMoveType( MOVETYPE_STEP );
 
-	if (m_tEzVariant == EZ_VARIANT_RAD)
-	{
-		SetBloodColor( BLOOD_COLOR_BLUE );
-	}
-	else
-	{
-		SetBloodColor( BLOOD_COLOR_YELLOW );
-	}
+	SetBloodColor( BLOOD_COLOR_ZOMBIE );
 	
 	SetRenderColor( 255, 255, 255, 255 );
 	
@@ -344,33 +337,13 @@ void CNPC_Gonome::Precache()
 	
 	if (GetModelName() == NULL_STRING)
 	{
-		switch ( m_tEzVariant )
-		{
-		case EZ_VARIANT_XEN:
-			SetModelName( AllocPooledString( "models/xonome.mdl" ) );
-			break;
-		case EZ_VARIANT_RAD:
-			SetModelName( AllocPooledString( "models/glownome.mdl" ) );
-			break;
-		default:
-			SetModelName( AllocPooledString( "models/gonome.mdl" ) );
-			break;
-		}
+		SetModelName( AllocPooledString( "models/gonome.mdl" ) );
 	}
 	PrecacheModel( STRING( GetModelName() ) );
 	
 
 
-	if ( m_tEzVariant == EZ_VARIANT_RAD )
-	{
-		PrecacheParticleSystem( "blood_impact_blue_01" );
-		m_nGonomeSpitSprite = PrecacheModel( "sprites/glownomespit.vmt" );// spit projectile.
-		PrecacheMaterial( "cable/goocable.vmt" );
-	}
-	else
-	{
-		m_nGonomeSpitSprite = PrecacheModel( "sprites/gonomespit.vmt" );// spit projectile.
-	}
+	m_nGonomeSpitSprite = PrecacheModel( "sprites/gonomespit.vmt" );// spit projectile.
 
 	PrecacheScriptSound( "Gonome.Idle" );
 	PrecacheScriptSound( "Gonome.Pain" );
@@ -421,8 +394,8 @@ bool CNPC_Gonome::CreateBehaviors()
 bool CNPC_Gonome::QueryHearSound( CSound *pSound )
 {
 	// Don't smell dead headcrabs
-	if ( pSound->SoundContext() & SOUND_CONTEXT_EXCLUDE_ZOMBIE )
-		return false;
+	/*if ( pSound->SoundContext() & SOUND_CONTEXT_EXCLUDE_ZOMBIE )
+		return false;*/
 
 	return BaseClass::QueryHearSound( pSound );
 }
@@ -474,7 +447,7 @@ int CNPC_Gonome::SelectFailSchedule( int failedSchedule, int failedTask, AI_Task
 		if ( flDistSqr <= Square(224.0f) )
 		{
 			CHintCriteria hintCriteria;
-			hintCriteria.SetHintType( HINT_BEAST_FRUSTRATION );
+			//hintCriteria.SetHintType( HINT_BEAST_FRUSTRATION );
 			hintCriteria.SetFlag( bits_HINT_NODE_NEAREST | bits_HINT_NODE_CLEAR );
 			hintCriteria.AddIncludePosition( vecEnemyPos, 96.0f );
 			CAI_Hint *pHint = CAI_HintManager::FindHint( this, hintCriteria );
@@ -563,22 +536,6 @@ extern int g_interactionBadCopKick;
 //-----------------------------------------------------------------------------
 bool CNPC_Gonome::HandleInteraction( int interactionType, void *data, CBaseCombatCharacter *sourceEnt )
 {
-	if ( interactionType == g_interactionBadCopKick )
-	{
-		// If this is a glownome, explode blue goo
-		if ( m_tEzVariant == EZ_VARIANT_RAD )
-		{
-			CTakeDamageInfo info( this, this, 30, DMG_BLAST_SURFACE | DMG_RADIATION );
-			RadiusDamage( info, GetAbsOrigin(), 128.0f, CLASS_NONE, this );
-			DispatchParticleEffect( "glownome_explode", WorldSpaceCenter(), GetAbsAngles() );
-			EmitSound( "npc_zassassin.kickburst" );
-			DropGooPuddle( CTakeDamageInfo() );
-		}
-
-		// What did you expect was going to happen?
-		UpdateEnemyMemory( sourceEnt, sourceEnt->GetAbsOrigin(), sourceEnt );
-		return true;
-	}
 
 	return BaseClass::HandleInteraction( interactionType, data, sourceEnt );
 }
@@ -972,14 +929,7 @@ void CNPC_Gonome::HandleAnimEvent( animevent_t *pEvent )
 				vecSpitDir.z += random->RandomFloat( -0.05, 0 );
 						
 				AttackSound();
-				if ( m_tEzVariant == EZ_VARIANT_RAD )
-				{
-					CGonomeSpit::Shoot( this, m_nGonomeSpitSprite, CSprite::SpriteCreate( "sprites/glownomespit.vmt", GetAbsOrigin(), true ), vecSpitOffset, vecSpitDir * 900 );
-				}
-				else
-				{
-					CGonomeSpit::Shoot( this, m_nGonomeSpitSprite, CSprite::SpriteCreate( "sprites/gonomespit.vmt", GetAbsOrigin(), true ), vecSpitOffset, vecSpitDir * 900 );
-				}
+				CGonomeSpit::Shoot( this, m_nGonomeSpitSprite, CSprite::SpriteCreate( "sprites/gonomespit.vmt", GetAbsOrigin(), true ), vecSpitOffset, vecSpitDir * 900 );
 			}
 		}
 		break;
@@ -1206,8 +1156,8 @@ bool CNPC_Gonome::BecomeRagdollOnClient(const Vector & force)
 	CBasePlayer *pPlayer = AI_GetSinglePlayer();
 	if ( pPlayer )
 	{
-		CEZ2_Player *pEZ2Player = assert_cast<CEZ2_Player*>(pPlayer);
-		pEZ2Player->Event_KilledEnemy( this, info );
+		/*CEZ2_Player* pEZ2Player = assert_cast<CEZ2_Player*>(pPlayer);
+		pEZ2Player->Event_KilledEnemy(this, info);*/
 	}
 
 	return BaseClass::BecomeRagdollOnClient(force);
@@ -1279,11 +1229,6 @@ int CNPC_Gonome::OnTakeDamage_Alive( const CTakeDamageInfo &inputInfo )
 		info.ScaleDamage( 0.25f );
 	}
 
-	// If this is a slimy zombie, it does not take damage from radiation
-	if ( m_tEzVariant == EZ_VARIANT_RAD && ( info.GetDamageType() & DMG_RADIATION ) ) {
-		return 0;
-	}
-
 	return BaseClass::OnTakeDamage_Alive ( inputInfo );
 }
 
@@ -1349,7 +1294,7 @@ bool CNPC_Gonome::SpawnNPC( const Vector position )
 	CAI_BaseNPC *pChild2 = dynamic_cast< CAI_BaseNPC * >(CreateEntityByName( "npc_headcrab" ));
 	if (pChild)
 	{
-		pChild->m_tEzVariant = this->m_tEzVariant;
+		//pChild->m_tEzVariant = this->m_tEzVariant;
 		pChild->AddSpawnFlags( SF_NPC_FALL_TO_GROUND );
 		pChild2->AddSpawnFlags( SF_NPC_FALL_TO_GROUND );
 		pChild->Precache();

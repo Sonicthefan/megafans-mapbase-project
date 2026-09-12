@@ -15,9 +15,6 @@
 #include "particle_parse.h"
 #include "ai_behavior_beast.h"
 
-// Use this for kick info struct
-#include "ez2/ez2_player.h"
-
 enum BossState
 {
 	BOSS_STATE_NORMAL,
@@ -225,10 +222,10 @@ public:
 	NPC_STATE SelectIdealState ( void );
 
 	bool 			OverrideMove( float flInterval );			// Override to take total control of movement (return true if done so)
-	bool			ShouldInvestigateSounds( void ) { return !m_bIsBaby || BaseClass::ShouldInvestigateSounds(); }	// 1upD - Adult predators always investigate sounds
-	virtual bool	ShouldAvoidGoo( void ) { return m_tEzVariant != EZ_VARIANT_RAD; } // Don't avoid goo if the slime variant
-
 #ifdef EZ2
+	bool			ShouldInvestigateSounds( void ) { return !m_bIsBaby || BaseClass::ShouldInvestigateSounds(); }	// 1upD - Adult predators always investigate sounds
+	//virtual bool	ShouldAvoidGoo( void ) { return m_tEzVariant != EZ_VARIANT_RAD; } // Don't avoid goo if the slime variant
+
 	virtual bool	HandleInteraction( int interactionType, void *data, CBaseCombatCharacter* sourceEnt );
 #endif
 

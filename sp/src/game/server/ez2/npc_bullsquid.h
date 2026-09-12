@@ -16,7 +16,7 @@
 
 #include "ai_basenpc.h"
 #include "npc_basepredator.h"
-#include "npc_egg.h"
+//#include "npc_egg.h"
 
 class CNPC_Bullsquid : public CNPC_BasePredator
 {
@@ -50,7 +50,8 @@ public:
 	int OnTakeDamage_Alive( const CTakeDamageInfo &inputInfo );
 	virtual CBaseEntity * BiteAttack( float flDist, const Vector &mins, const Vector &maxs );
 
-	bool IsPrey( CBaseEntity* pTarget ) { return pTarget->Classify() == CLASS_HEADCRAB || pTarget->Classify() == CLASS_EARTH_FAUNA  || pTarget->Classify() == CLASS_ALIEN_FAUNA; }
+	bool IsPrey( CBaseEntity* pTarget ) { return pTarget->Classify() == CLASS_HEADCRAB || pTarget->Classify() == CLASS_EARTH_FAUNA  /* || pTarget->Classify() == CLASS_ALIEN_FAUNA*/;
+	}
 	virtual bool ShouldInfight( CBaseEntity * pTarget ); // Could this target npc be a rival I need to kill?
 
 	void RunAI ( void );
@@ -67,7 +68,7 @@ public:
 	void		ExplosionEffect( void );
 
 	bool SpawnNPC( const Vector position, const QAngle angle );
-	CNPC_Egg * SpawnEgg( const Vector position, const QAngle angle );
+	//CNPC_Egg * SpawnEgg( const Vector position, const QAngle angle );
 	CNPC_Bullsquid * SpawnLive( const Vector position, bool isBaby );
 
 	DEFINE_CUSTOM_AI;
